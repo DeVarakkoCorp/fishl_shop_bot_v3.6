@@ -1,21 +1,144 @@
+import base64
+import json
 import logging
+import os
 import re
+import shutil
 import sqlite3
+import tempfile
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 
-from config import BOT_TOKEN, MANAGER_USERNAME, ADMIN_CHAT_ID, SHOP_NAME
+from config import (
+    BOT_TOKEN, MANAGER_USERNAME, ADMIN_CHAT_ID, SHOP_NAME,
+    GITHUB_TOKEN, GITHUB_REPO, GITHUB_BACKUP_BRANCH, GITHUB_BACKUP_PATH,
+    GITHUB_BACKUP_INTERVAL_MINUTES,
+)
 from prices import PRICES, EXTRA_PRICES, PRICE_CATEGORIES
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "orders.db"
+
+# Railway Volume: при наличии тома Railway задаёт RAILWAY_VOLUME_MOUNT_PATH
+# автоматически. Если том ещё не подключён локально, используем ./data.
+VOLUME_PATH = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", str(BASE_DIR / "data"))
+DATA_DIR = Path(VOLUME_PATH)
+DB_PATH = DATA_DIR / "orders.db"
 orders = {}
+
+
+def ensure_persistent_databases():
+    """Создаёт каталог данных и один раз переносит DB из репозитория в Volume."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    for seed in sorted(BASE_DIR.glob("orders*.db")):
+        destination = DATA_DIR / seed.name
+        if destination.exists():
+            continue
+        try:
+            shutil.copy2(seed, destination)
+            logger.info("Скопирована исходная БД в persistent storage: %s", destination)
+        except OSError:
+            logger.exception("Не удалось скопировать %s в %s", seed, destination)
+
+
+def github_backup_enabled():
+    return bool(GITHUB_TOKEN and GITHUB_REPO and GITHUB_BACKUP_BRANCH)
+
+
+def github_api(method, path, payload=None):
+    url = "https://api.github.com" + path
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=data, method=method,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
+            "X-GitHub-Api-Version": "2026-03-10",
+            "User-Agent": "Fishl-Shop-Bot",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as response:
+        body = response.read()
+        return response.status, json.loads(body.decode("utf-8")) if body else {}
+
+
+def ensure_github_backup_branch():
+    """Создаёт ветку бэкапов один раз, если её ещё нет."""
+    owner, repo = GITHUB_REPO.split("/", 1)
+    ref_path = f"/repos/{owner}/{repo}/git/ref/heads/{GITHUB_BACKUP_BRANCH}"
+    try:
+        github_api("GET", ref_path)
+        return
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+
+    default_ref = f"/repos/{owner}/{repo}/git/ref/heads/main"
+    try:
+        _, data = github_api("GET", default_ref)
+    except urllib.error.HTTPError:
+        default_ref = f"/repos/{owner}/{repo}/git/ref/heads/master"
+        _, data = github_api("GET", default_ref)
+
+    sha = data["object"]["sha"]
+    github_api("POST", f"/repos/{owner}/{repo}/git/refs", {
+        "ref": f"refs/heads/{GITHUB_BACKUP_BRANCH}",
+        "sha": sha,
+    })
+
+
+def create_sqlite_backup_bytes():
+    """Делает согласованный snapshot SQLite через backup API."""
+    if not DB_PATH.exists():
+        return None
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "orders.db"
+        source = sqlite3.connect(DB_PATH)
+        destination = sqlite3.connect(target)
+        try:
+            source.backup(destination)
+        finally:
+            destination.close()
+            source.close()
+        return target.read_bytes()
+
+
+def upload_github_backup():
+    """Загружает новый snapshot БД в отдельную ветку GitHub."""
+    if not github_backup_enabled():
+        return False
+    content = create_sqlite_backup_bytes()
+    if not content:
+        logger.warning("GitHub backup skipped: orders.db отсутствует")
+        return False
+
+    ensure_github_backup_branch()
+    owner, repo = GITHUB_REPO.split("/", 1)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    path = f"{GITHUB_BACKUP_PATH.strip('/').strip()}/orders_{timestamp}.db"
+    payload = {
+        "message": f"Backup orders.db {timestamp}",
+        "content": base64.b64encode(content).decode("ascii"),
+        "branch": GITHUB_BACKUP_BRANCH,
+    }
+    github_api("PUT", f"/repos/{owner}/{repo}/contents/{path}", payload)
+    logger.info("GitHub backup uploaded: %s:%s", GITHUB_BACKUP_BRANCH, path)
+    return True
+
+
+async def scheduled_github_backup(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        upload_github_backup()
+    except Exception:
+        logger.exception("GitHub backup failed")
 
 MAIN_MENU = InlineKeyboardMarkup([
     [InlineKeyboardButton("💰 Прайсы", callback_data="prices")],
@@ -314,6 +437,7 @@ def manager_keyboard():
         [InlineKeyboardButton("➕ Добавить скидку", callback_data="mgr_discount_add")],
         [InlineKeyboardButton("📋 Активные скидки", callback_data="mgr_discount_list")],
         [InlineKeyboardButton("🗑 Управление скидками", callback_data="mgr_discount_manage")],
+        [InlineKeyboardButton("💾 Сделать бэкап", callback_data="mgr_backup")],
     ])
 
 
@@ -447,11 +571,9 @@ def format_client_order(row):
 
 
 def get_order_database_paths():
-    """Return every orders database available beside the bot."""
-    paths = sorted(
-        BASE_DIR.glob("orders*.db"),
-        key=lambda p: (p.name != "orders.db", p.name)
-    )
+    """Все DB внутри persistent storage Volume."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    paths = sorted(DATA_DIR.glob("orders*.db"), key=lambda p: (p.name != "orders.db", p.name))
     if DB_PATH not in paths:
         paths.insert(0, DB_PATH)
     return paths
@@ -651,6 +773,22 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         if data == "mgr_all_orders":
             await show_manager_all_orders(update, context, edit=True)
+            return
+
+        if data == "mgr_backup":
+            if not is_manager(update):
+                await query.answer("Недоступно", show_alert=True)
+                return
+            await query.answer("Делаю бэкап...")
+            try:
+                ok = upload_github_backup()
+                if ok:
+                    await query.edit_message_text("✅ Бэкап orders.db загружен на GitHub.", reply_markup=manager_keyboard())
+                else:
+                    await query.edit_message_text("⚠️ GitHub-бэкап не настроен. Добавь переменные GITHUB_* в Railway.", reply_markup=manager_keyboard())
+            except Exception as exc:
+                logger.exception("Manual GitHub backup failed")
+                await query.edit_message_text(f"❌ Не удалось сделать бэкап: {exc}", reply_markup=manager_keyboard())
             return
         if data == "mgr_discount_add":
             context.user_data["manager_discount_step"] = "type"
@@ -1296,6 +1434,20 @@ async def all_orders_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await show_manager_all_orders(update, context, edit=False)
 
 
+async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_manager(update):
+        return
+    try:
+        ok = upload_github_backup()
+        await update.message.reply_text(
+            "✅ Бэкап orders.db загружен на GitHub." if ok else "⚠️ GitHub-бэкап не настроен. Проверь GITHUB_* в Railway.",
+            reply_markup=manager_keyboard(),
+        )
+    except Exception as exc:
+        logger.exception("Manual GitHub backup command failed")
+        await update.message.reply_text(f"❌ Не удалось сделать бэкап: {exc}")
+
+
 async def apply_order_discount_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not is_manager(update):
@@ -1390,14 +1542,20 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
+    ensure_persistent_databases()
     db().close()
     app = Application.builder().token(BOT_TOKEN).build()
+    if github_backup_enabled():
+        interval = max(15, int(GITHUB_BACKUP_INTERVAL_MINUTES))
+        app.job_queue.run_repeating(scheduled_github_backup, interval=interval * 60, first=30)
+        logger.info("GitHub backups enabled: every %s minutes, branch=%s", interval, GITHUB_BACKUP_BRANCH)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu", menu))
     app.add_handler(CommandHandler("myorders", my_orders_command))
     app.add_handler(CommandHandler("manager", manager_command))
     app.add_handler(CommandHandler("orders", orders_command))
     app.add_handler(CommandHandler("allorders", all_orders_command))
+    app.add_handler(CommandHandler("backup", backup_command))
     app.add_handler(CommandHandler("chatid", chat_id))
     app.add_handler(CallbackQueryHandler(confirm_order, pattern=r"^confirm_order$"))
     app.add_handler(CallbackQueryHandler(cancel_order, pattern=r"^cancel_order$"))

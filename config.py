@@ -1,6 +1,6 @@
 import os
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8823534172:AAHSB3nV0VFXvkkLEAGunGBBZOKHMljc6rE")
 MANAGER_USERNAME = os.getenv("MANAGER_USERNAME", "Fishlme")
-ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
+ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "5604717862"))
 SHOP_NAME = "Fishl Shop"
