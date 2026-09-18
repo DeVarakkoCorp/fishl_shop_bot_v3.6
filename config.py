@@ -1,16 +1,6 @@
-# =========================
-# НАСТРОЙКИ FISHL SHOP BOT
-# =========================
+import os
 
-# Токен от @BotFather.
-BOT_TOKEN = "8823534172:AAEq-LhHAqTXHWbL0NJ5HwckTHe5kjCiMjQ"
-
-# Username менеджера без @.
-MANAGER_USERNAME = "Fishlme"
-
-# ID Telegram-чата, куда бот будет отправлять новые заказы.
-# Например: -1001234567890
-# Если оставить 0, заказы не будут отправляться в чат менеджеров.
-ADMIN_CHAT_ID = 5604717862
-
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+MANAGER_USERNAME = os.getenv("MANAGER_USERNAME", "Fishlme")
+ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
 SHOP_NAME = "Fishl Shop"
