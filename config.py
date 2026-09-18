@@ -6,7 +6,7 @@
 BOT_TOKEN = "8823534172:AAEq-LhHAqTXHWbL0NJ5HwckTHe5kjCiMjQ"
 
 # Username менеджера без @.
-MANAGER_USERNAME = "devarapq"
+MANAGER_USERNAME = "Fishlme"
 
 # ID Telegram-чата, куда бот будет отправлять новые заказы.
 # Например: -1001234567890
