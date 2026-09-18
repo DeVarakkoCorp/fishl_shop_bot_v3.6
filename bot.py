@@ -26,6 +26,30 @@ MAIN_MENU = InlineKeyboardMarkup([
 TIER_NAMES = ["0–100%", "50–100%", "80–100%"]
 TIER_KEYS = ["0-100", "50-100", "80-100"]
 
+DIKOVINKI_PRICES = {
+    "Мондштадт": 1.0,
+    "Ли Юэ": 1.5,
+    "Инадзума": 1.5,
+    "Сумеру": 2.0,
+    "Фонтейн": 1.5,
+    "Натлан, Снежная": 2.0,
+}
+
+OKULY_PRICES = [
+    ("Анемокулы", 200),
+    ("Геокулы", 1000),
+    ("Багровые агаты", 500),
+    ("Электрокулы", 700),
+    ("Адъюванты светоносного камня", 550),
+    ("Гидрокулы", 1200),
+    ("Оперенья очищающего света", 690),
+    ("Кои карпы", 1100),
+    ("Пирокулы", 550),
+    ("Лунокулы", 1500),
+    ("Лунокулы — на данный момент", 1000),
+    ("Криокулы", 1500),
+]
+
 RANK57_PRICES = {
     "Крутки": "КРУТКИ💫\n\n💫1 крутка — 30 рублей💫\n💫10 круток — 300 рублей💫\n💫100 круток — 3000 рублей💫",
     "ЭНДГЕЙМ": "ЭНДГЕЙМ🌟\n\n🌱10 этаж бездны — 120 рублей\n🌙11 этаж бездны — 150 рублей\n🌙12 этаж бездны — 300 рублей",
@@ -35,6 +59,12 @@ RANK57_PRICES = {
 RANK57_CATEGORIES = list(RANK57_PRICES.keys())
 STATUS_LABELS = {"new": "🆕 Новый", "taken": "🟡 Взято", "working": "🔵 В работе", "done": "✅ Выполнен", "cancelled": "❌ Отменён"}
 
+
+def format_price(value):
+    value = float(value)
+    if value.is_integer():
+        return str(int(value))
+    return f"{value:.2f}".rstrip("0").rstrip(".")
 
 def db():
     conn = sqlite3.connect(DB_PATH)
@@ -120,6 +150,8 @@ def rank57_item_keyboard(category_index):
             continue
         if re.search(r"\d+(?:\.5)?\s*(?:₽|руб(?:лей|ля)?|рубл(?:ей|я)?)", line, re.I):
             rows.append([InlineKeyboardButton(line[:60], callback_data=f"rank57_item:{category_index}:{i}")])
+    if category == "Крутки":
+        rows.append([InlineKeyboardButton("✏️ Ввести своё количество", callback_data="custom_quantity:spins:57")])
     rows.append([InlineKeyboardButton("⬅️ К услугам", callback_data="cleanup")])
     return InlineKeyboardMarkup(rows)
 
@@ -144,13 +176,33 @@ def rank57_item_data(category_index, item_index):
 
 def service_item_keyboard(category_index):
     category = PRICE_CATEGORIES[category_index]
-    # Every line in the source price list becomes a selectable service.
+
+    if category == "Крутки":
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("1 крутка — 24 ₽", callback_data="service_item:0:1")],
+            [InlineKeyboardButton("10 круток — 240 ₽", callback_data="service_item:0:2")],
+            [InlineKeyboardButton("100 круток — 2400 ₽", callback_data="service_item:0:3")],
+            [InlineKeyboardButton("✏️ Ввести своё количество", callback_data="custom_quantity:spins:old")],
+            [InlineKeyboardButton("⬅️ К услугам", callback_data="cleanup")],
+        ])
+
+    if category == "Диковинки":
+        rows = [[InlineKeyboardButton(region, callback_data=f"custom_quantity:dikovinki:{i}")]
+                for i, region in enumerate(DIKOVINKI_PRICES)]
+        rows.append([InlineKeyboardButton("⬅️ К услугам", callback_data="cleanup")])
+        return InlineKeyboardMarkup(rows)
+
+    if category == "Окулы":
+        rows = [[InlineKeyboardButton(f"{name} — {price} ₽/шт.", callback_data=f"custom_quantity:okuly:{i}")]
+                for i, (name, price) in enumerate(OKULY_PRICES)]
+        rows.append([InlineKeyboardButton("⬅️ К услугам", callback_data="cleanup")])
+        return InlineKeyboardMarkup(rows)
+
     lines = [line.strip() for line in EXTRA_PRICES[category].split("\n") if line.strip()]
     rows = []
     for i, line in enumerate(lines):
-        if line.startswith("Уточняйте в лс") or line.startswith("(Дочистку") or line.startswith("(Дочистку"):
+        if line.startswith("Уточняйте в лс") or line.startswith("(Дочистку"):
             continue
-        # Headers inside the 57+ section are not orderable items.
         if line in {"КРУТКИ", "ЭНДГЕЙМ", "НАТИСК", "Театр🌟"}:
             continue
         rows.append([InlineKeyboardButton(line[:60], callback_data=f"service_item:{category_index}:{i}")])
@@ -399,6 +451,57 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data.startswith("custom_quantity:"):
+        parts = data.split(":")
+        if len(parts) != 3:
+            await query.edit_message_text("❌ Ошибка выбора.", reply_markup=service_category_keyboard())
+            return
+        kind, value = parts[1], parts[2]
+
+        if kind == "spins":
+            unit_price = 30.0 if value == "57" else 24.0
+            order = {"service": "Крутки", "quantity_unit": "круток", "unit_price": unit_price}
+            prompt = (
+                f"✏️ *Крутки*\n\n"
+                f"Цена: *{format_price(unit_price)} ₽ за 1 крутку*.\n\n"
+                "Введи нужное количество круток:"
+            )
+        elif kind == "dikovinki":
+            try:
+                region = list(DIKOVINKI_PRICES.keys())[int(value)]
+            except (ValueError, IndexError):
+                await query.edit_message_text("❌ Регион не найден.", reply_markup=service_category_keyboard())
+                return
+            unit_price = DIKOVINKI_PRICES[region]
+            order = {"service": "Диковинки", "region": region, "quantity_unit": "шт.", "unit_price": unit_price}
+            prompt = (
+                f"✏️ *Диковинки — {region}*\n\n"
+                f"Цена: *{format_price(unit_price)} ₽ за 1 шт.*\n\n"
+                "Введи нужное количество:"
+            )
+        elif kind == "okuly":
+            try:
+                item_name, unit_price = OKULY_PRICES[int(value)]
+            except (ValueError, IndexError):
+                await query.edit_message_text("❌ Окулы не найдены.", reply_markup=service_category_keyboard())
+                return
+            unit_price = OKULY_PRICES[item_name]
+            order = {"service": "Окулы", "service_item": item_name, "quantity_unit": "шт.", "unit_price": unit_price}
+            prompt = (
+                f"✏️ *{item_name}*\n\n"
+                f"Цена: *{format_price(unit_price)} ₽ за 1 шт.*\n\n"
+                "Введи нужное количество:"
+            )
+        else:
+            await query.edit_message_text("❌ Неизвестный тип услуги.", reply_markup=service_category_keyboard())
+            return
+
+        orders[user_id] = order
+        context.user_data.clear()
+        context.user_data["waiting_for_quantity"] = True
+        await query.edit_message_text(prompt, parse_mode="Markdown")
+        return
+
     if data.startswith("service_item:"):
         try:
             _, category_index, item_index = data.split(":", 2)
@@ -462,6 +565,38 @@ async def receive_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     order = orders.get(user_id)
 
     if not order:
+        return
+
+    # 0. Произвольное количество
+    if context.user_data.get("waiting_for_quantity"):
+        if not re.fullmatch(r"[1-9]\d{0,5}", text):
+            await update.message.reply_text("❌ Введи целое положительное количество, например: 37.")
+            return
+        quantity = int(text)
+        if quantity > 100000:
+            await update.message.reply_text("❌ Максимальное количество — 100000 шт.")
+            return
+
+        order["quantity"] = quantity
+        order["price"] = round(quantity * float(order["unit_price"]), 2)
+        context.user_data["waiting_for_quantity"] = False
+        context.user_data["waiting_for_login"] = True
+
+        if order.get("service") == "Диковинки":
+            item_line = f"{order['region']} — {quantity} шт. × {format_price(order['unit_price'])} ₽"
+        elif order.get("service") == "Окулы":
+            item_line = f"{order['service_item']} — {quantity} шт. × {format_price(order['unit_price'])} ₽"
+        else:
+            item_line = f"{quantity} круток × {format_price(order['unit_price'])} ₽"
+        order["service_item"] = item_line
+
+        await update.message.reply_text(
+            f"✅ Количество: *{quantity}*\n"
+            f"💰 Стоимость: *{format_price(order['price'])} ₽*\n\n"
+            "🔐 *Шаг 1 из 3*\n\n"
+            "Отправь почту (email), привязанную к аккаунту.",
+            parse_mode="Markdown",
+        )
         return
 
     # 1. Email/login
