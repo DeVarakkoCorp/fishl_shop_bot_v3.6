@@ -1,15 +1,16 @@
-import os
+# =========================
+# НАСТРОЙКИ FISHL SHOP BOT
+# =========================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-MANAGER_USERNAME = os.getenv("MANAGER_USERNAME", "Fishlme")
-ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
+# Токен от @BotFather.
+BOT_TOKEN = "7380418131:AAG-lJmaAPF57enFsWQvObKQxNAB03hUbFk"
+
+# Username менеджера без @.
+MANAGER_USERNAME = "Fishlme"
+
+# ID Telegram-чата, куда бот будет отправлять новые заказы.
+# Например: -1001234567890
+# Если оставить 0, заказы не будут отправляться в чат менеджеров.
+ADMIN_CHAT_ID = 5604717862
+
 SHOP_NAME = "Fishl Shop"
-
-# GitHub backups. Token is stored only in Railway Variables, never in GitHub.
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
-GITHUB_REPO = os.getenv("GITHUB_REPO", "")
-GITHUB_BACKUP_BRANCH = os.getenv("GITHUB_BACKUP_BRANCH", "backups")
-GITHUB_BACKUP_PATH = os.getenv("GITHUB_BACKUP_PATH", "backups/orders")
-GITHUB_BACKUP_INTERVAL_MINUTES = int(
-    os.getenv("GITHUB_BACKUP_INTERVAL_MINUTES", "360")
-)
