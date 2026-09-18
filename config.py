@@ -3,7 +3,7 @@
 # =========================
 
 # Токен от @BotFather.
-BOT_TOKEN = "7380418131:AAG-lJmaAPF57enFsWQvObKQxNAB03hUbFk"
+BOT_TOKEN = "8823534172:AAEq-LhHAqTXHWbL0NJ5HwckTHe5kjCiMjQ"
 
 # Username менеджера без @.
 MANAGER_USERNAME = "devarapq"
